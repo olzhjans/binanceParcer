@@ -26,20 +26,20 @@ type PriceResponse struct {
 
 type Worker struct {
 	symbols       []string
-	requestCount  int
+	requestCount  int // не закрыл мьютексом, хотя этот счетчик тоже в разных горутинах юзается
 	priceCache    map[string]string
-	priceCacheMux sync.Mutex
+	priceCacheMux sync.Mutex // хорошая прктика писать под мьютексом, все что мы им закрываем
 }
 
 func (w *Worker) Run(ctx context.Context, wg *sync.WaitGroup, results chan<- string) {
 	defer wg.Done()
-	client := &http.Client{}
+	client := &http.Client{} // если спецом или случайно запустим несколько раз метод Run то будет алоцировать новый клиент кажд раз и еще если клиент без таймаунта, то он может зависнуть навсегда
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			for _, symbol := range w.symbols {
+			for _, symbol := range w.symbols { // селект лучше в этот цикл, иначе чтобы остановиться надо ждать когда по всем символам пройдемся
 				url := fmt.Sprintf("https://api.binance.com/api/v3/ticker/price?symbol=%s", symbol)
 				resp, err := client.Get(url)
 				if err != nil {
@@ -49,7 +49,7 @@ func (w *Worker) Run(ctx context.Context, wg *sync.WaitGroup, results chan<- str
 				body, err := io.ReadAll(resp.Body)
 				if err != nil {
 					log.Println("Error reading response body:", err)
-					err = resp.Body.Close()
+					err = resp.Body.Close() // лучше через defer
 					if err != nil {
 						return
 					}
@@ -73,11 +73,11 @@ func (w *Worker) Run(ctx context.Context, wg *sync.WaitGroup, results chan<- str
 
 				message := fmt.Sprintf("%s price:%s", priceResp.Symbol, priceResp.Price)
 				if exists && oldPrice != priceResp.Price {
-					message += " changed"
+					message += " changed" // так тоже можно, но я бы разделил логику сбора цен и логику определения changed
 				}
 				results <- message
 
-				w.requestCount++
+				w.requestCount++ // счетчик должен учитывать и ошибочные запросы
 			}
 		}
 	}
@@ -99,13 +99,13 @@ func main() {
 	}
 
 	// Adjust max workers
-	numCPU := 12
+	numCPU := 12 // ??? у меня на машине не 12 ядер
 	if config.MaxWorkers > numCPU {
 		config.MaxWorkers = numCPU
 	}
 
 	// Распределение символов по воркерам
-	workers := make([]*Worker, config.MaxWorkers)
+	workers := make([]*Worker, config.MaxWorkers) // если символов меньше чем воркеров, создаим лишних воркеров
 	for i := 0; i < config.MaxWorkers; i++ {
 		workers[i] = &Worker{
 			symbols:    []string{},
@@ -113,7 +113,7 @@ func main() {
 		}
 	}
 	for i, symbol := range config.Symbols {
-		workers[i%config.MaxWorkers].symbols = append(workers[i%config.MaxWorkers].symbols, symbol)
+		workers[i%config.MaxWorkers].symbols = append(workers[i%config.MaxWorkers].symbols, symbol) // если MaxWorkers=0 словишь панику
 	}
 
 	// Run workers
